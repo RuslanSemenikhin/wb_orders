@@ -1,0 +1,101 @@
+version: '3.8'
+
+dotenv: [./backend-base/deployment/.env]  # файл переменного окружения, для возможности импорта переменных в taskfile
+
+silent: true #молчим в выводе
+# - docker exec -ti wborders_pg psql -U Ruslan wb_orders
+vars: 
+  ENV_FILE: ./backend-base/deployment/.env
+  DOCKER_COMPOSE_PATHS: |
+    -f ./backend-base/deployment/docker-compose.yaml
+  DOCKER_COMPOSE_CMD: docker compose --env-file {{.ENV_FILE}} {{range $line := .DOCKER_COMPOSE_PATHS | splitLines -}}
+    {{$line}}
+    {{end}}
+  # SQL_YAML_PATHH: ${SQL_YAML_PATHH}
+  # GENERATE_GO_FROM_SQL_CMD: generate -f {{range $line := .SQL_YAML_PATHH | splitLines -}}
+  #   {{$line}}
+  #   {{end}}
+  # MIGRATIONS_PATH: ./backend-base/migrations/  
+  PACKEGES: |
+    github.com/go-task/task/v3/cmd/task@latest
+    github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+  TOOLS_DIR:
+    sh: echo "$(pwd)/tools" # динамическая переменная, присваивает TOOLS_DIR строку результат выполнения команды echo "$(pwd)/tools"
+tasks: # сами задачи
+  packages_install:
+    desc: Установка необходимых инструментов для проекта # описание/наименование задачи
+    cmds:
+      - echo "-Install packages"
+      - for: {var: PACKEGES}  # для каждого пакета
+        cmd: GOBIN="{{.TOOLS_DIR}}" go install "{{ .ITEM }}"
+      - GOBIN="{{.TOOLS_DIR}}" go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.17.0 
+  deploy:
+    desc: Развертывание контейнеров
+    cmds:
+      - echo "-Deploy"
+      # - echo "{{.DOCKER_COMPOSE_CMD}} up -d {{.CLI_ARGS}}"
+      - "{{.DOCKER_COMPOSE_CMD}} up -d {{.CLI_ARGS}}"
+  generate:
+    desc: Create folders, generate GO code from SQL code/file
+    deps:
+      [packages_install]
+    cmds:
+      - echo "-Generate GO code from SQL querys"
+      # - echo {{.GENERATE_GO_FROM_SQL_CMD}}
+      - "{{.TOOLS_DIR}}/sqlc generate -f ${SQL_YAML_PATH}"
+      # - "{{.TOOLS_DIR}}/sqlc {{.GENERATE_GO_FROM_SQL_CMD}}"
+  migrateUp:
+    desc: Make migrations UP
+    deps:
+      [packages_install, deploy, generate]
+    cmds:
+      - echo "-Make migrate UP"
+      - sleep 3  # по хорошему нужно сделать проверку на коннект к базе, иначе сразу не срабатывают миграции
+      - docker exec -ti ${CONT_NAME_POSTGRES} pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}  # проверка коннекта к БД
+      # - ./tools/migrate -path "{{.MIGRATIONS_PATH}}" -database postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable -verbose up
+      - ./tools/migrate -path ${MIGRATIONS_PATH} -database postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable -verbose up
+  migrateDown:
+    desc: Make migrations DOWN
+    cmds:
+      - echo "-Make migrate DOWN"
+      # - ./tools/migrate -path "{{.MIGRATIONS_PATH}}" -database postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable -verbose down
+      - ./tools/migrate -path ${MIGRATIONS_PATH} -database postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable -verbose down
+  stop:
+    desc: Make migrateDown (delete table from db), stop docker containers, delete docker containers
+    deps:
+      [migrateDown]
+    cmds:
+      - echo "-Stop DB"
+      - docker stop ${CONT_NAME_POSTGRES}
+      - echo "-Stop KAFKA UI"
+      - docker stop ${CONT_NAME_KAFKA_UI}
+      - echo "-Stop KAFKA"
+      - docker stop ${CONT_NAME_KAFKA}
+      - echo "-Stop ZOOKEEPER"
+      - docker stop ${CONT_NAME_ZOOKEEPER}
+      - echo "-Drop Docker Containers"':'
+      - docker rm ${CONT_NAME_POSTGRES}
+      - docker rm ${CONT_NAME_KAFKA_UI}
+      - docker rm ${CONT_NAME_KAFKA}
+      - docker rm ${CONT_NAME_ZOOKEEPER}
+  # test: 
+  #   desc: just for test
+  #   cmds:
+  #     - echo "start test..."
+  #     - echo {{.SQL_YAML_PATHH}}
+  #     - echo "{{range $file := .SQL_YAML_PATHH}} {{$file}} {{end}}"
+  test: 
+    desc: just for test
+    cmds:
+      - echo "start test..."
+      - echo ${TEST}
+      - echo -e '#'!/bin/bash'\n'
+        KT="/opt/bitnami/kafka/bin/kafka-topics.sh"'\n'
+        echo "Подключаемся к kafka"'\n'
+        "$KT" --bootstrap-server localhost:9092 --list'\n'
+        echo "Создаём топик"'\n'
+        "$KT" --bootstrap-server localhost:9092 --create --if-not-exists --topic orders --replication-factor 1 --partitions 1'\n'
+        echo "Топики созданы:"'\n'
+        "$KT" --bootstrap-server localhost:9092 --list > test.sh
+
+
