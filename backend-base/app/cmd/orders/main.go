@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,27 +27,32 @@ func main() {
 
 	fx.New(
 		fx.Provide( //регистрируем
-			NewHTTPServer,
 			NewKafkaConsumerService,
+			NewHTTPServer,
 		),
 		fx.Invoke( //конфиг запуска (этапы)
-			func(*http.Server) {},
 			func(*KafkaConsumerService) {},
+			func(*http.Server) {},
 		),
 	).Run() // запуск (выполнение в заданном/конфигурированном порядке/логике)
 
 }
 
+func SubscribeHandler(w http.ResponseWriter, r *http.Request) {
+}
+
 func NewHTTPServer(lc fx.Lifecycle) *http.Server {
 	srv := &http.Server{Addr: ":8070"}
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "../../../html/index.html")
+	})
+
+	http.HandleFunc("/orders", SubscribeHandler)
+
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			ln, err := net.Listen("tcp", srv.Addr)
-			if err != nil {
-				return err
-			}
-			fmt.Println("Starting HTTP server at", srv.Addr)
-			go srv.Serve(ln)
+			go http.ListenAndServe(":9090", nil)
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
@@ -105,15 +109,14 @@ func (k *KafkaConsumerService) Start() {
 	// 3. Create a Goroutine to run the consumer / worker.
 	doneCh := make(chan struct{})
 	go func() {
-		for {
+		for { // читаем/слушаем
 			select {
 			case err := <-k.consumer.Errors():
 				fmt.Println(err)
 			case msg := <-k.consumer.Messages():
 				msgCnt++
 				fmt.Printf("Received order Count %d: | Topic(%s) | Message(%s) \n", msgCnt, string(msg.Topic), string(msg.Value))
-				order := string(msg.Value)
-				fmt.Printf("Brewing coffee for order: %s\n", order)
+				fmt.Printf("Brewing coffee for order: %s\n", msg.Value)
 			case <-sigchan:
 				fmt.Println("Interrupt is detected")
 				doneCh <- struct{}{}
